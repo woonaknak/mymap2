@@ -1,0 +1,372 @@
+[index (5).html](https://github.com/user-attachments/files/33476288/index.5.html)
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>카카오맵 영화관과 주변 카페 찾기</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; font-family: Arial, sans-serif; background: #f5f7fa; }
+  .container { display: flex; width: 100%; height: 100vh; height: 100dvh; }
+  .sidebar { width: 35%; min-width: 300px; padding: 24px; background: white; overflow-y: auto; box-shadow: 2px 0 8px rgba(0,0,0,.08); z-index: 1; }
+  h1 { font-size: 24px; color: #222; margin-top: 0; }
+  .description { font-size: 14px; color: #777; margin-bottom: 20px; }
+  .search-box { display: flex; gap: 8px; margin-bottom: 20px; }
+  #searchInput { flex: 1; min-width: 0; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; }
+  #searchButton { padding: 12px 18px; background: #fee500; border: 0; border-radius: 8px; font-weight: bold; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #locationButton, #cinemaButton, #cafeButton, #backButton { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+  #locationButton { background: #f5f7fa; border: 1px solid #ddd; }
+  #cinemaButton { background: #e8efff; border: 1px solid #b8c9ff; color: #234d9c; }
+  #cafeButton { background: #e7f5e9; border: 1px solid #a8d7b0; color: #20652c; }
+  #backButton { background: #fff; border: 1px solid #ccc; }
+  #cafeSection { display: none; padding: 14px; margin-bottom: 14px; background: #f5fbf6; border-radius: 10px; }
+  #selectedCinemaName { font-size: 14px; font-weight: bold; margin: 0 0 10px; }
+  #statusMessage { font-size: 13px; color: #666; line-height: 1.6; margin-bottom: 15px; }
+  .result-count { font-size: 13px; color: #777; margin-bottom: 10px; }
+  .result-item { padding: 16px 10px; border-bottom: 1px solid #eee; cursor: pointer; }
+  .result-item:hover { background: #fffbea; }
+  .result-item h3 { margin: 0 0 8px; font-size: 16px; }
+  .result-item p { margin: 4px 0; font-size: 13px; color: #666; }
+  .map-container { flex: 1; min-width: 0; height: 100%; position: relative; background: #e9edf3; }
+  #map { width: 100%; height: 100%; }
+  #mapLoading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 16px 22px; background: white; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.1); font-size: 14px; text-align: center; z-index: 2; }
+  @media (max-width: 650px) { .container { flex-direction: column; } .sidebar { width: 100%; min-width: 0; height: 45%; } .map-container { height: 55%; flex: none; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <aside class="sidebar">
+    <h1>📍 장소 검색</h1>
+    <p class="description">영화관을 선택한 다음 주변 카페도 찾아보세요!</p>
+    <div class="search-box">
+      <input id="searchInput" type="text" placeholder="예: 카페, 도서관, 학교">
+      <button id="searchButton" disabled>검색</button>
+    </div>
+    <button id="locationButton" disabled>📍 내 위치로 이동</button>
+    <button id="cinemaButton" disabled>🎬 내 주변 영화관 찾기 (5km)</button>
+    <!-- 영화관을 선택했을 때만 나타나는 영역 -->
+    <div id="cafeSection">
+      <p id="selectedCinemaName"></p>
+      <button id="cafeButton">☕ 이 영화관 주변 카페 찾기 (1km)</button>
+      <button id="backButton" style="display:none;">← 영화관 목록으로 돌아가기</button>
+    </div>
+    <p id="statusMessage">카카오맵을 불러오는 중입니다...</p>
+    <div id="resultList"></div>
+  </aside>
+  <div class="map-container">
+    <div id="map"></div>
+    <div id="mapLoading">지도를 불러오는 중입니다...</div>
+  </div>
+</div>
+<script>
+  // 카카오맵 JavaScript 키 (카카오 디벨로퍼스에서 등록한 키 사용)
+  const kakaoApiKey = "78249eeff559719ed80f62909378e437";
+  const cinemaRadius = 5000; // 현재 위치에서 영화관 검색 반경 5km
+  const cafeRadius = 1000;   // 선택한 영화관에서 카페 검색 반경 1km
+
+  let map = null;
+  let places = null;
+  let infoWindow = null;
+  let currentInfoWindow = null;
+  let currentMarker = null;
+  let selectedCinemaMarker = null;
+  let markers = [];
+  let currentPosition = null;
+  let selectedCinema = null;
+  let savedCinemaResults = [];
+  let mapReady = false;
+  let searchRequestId = 0;
+  let locationRequestId = 0;
+
+  const searchInput = document.getElementById("searchInput");
+  const searchButton = document.getElementById("searchButton");
+  const locationButton = document.getElementById("locationButton");
+  const cinemaButton = document.getElementById("cinemaButton");
+  const cafeButton = document.getElementById("cafeButton");
+  const backButton = document.getElementById("backButton");
+  const cafeSection = document.getElementById("cafeSection");
+  const selectedCinemaName = document.getElementById("selectedCinemaName");
+  const statusMessage = document.getElementById("statusMessage");
+  const resultList = document.getElementById("resultList");
+  const mapLoading = document.getElementById("mapLoading");
+
+  function updateStatus(message) { statusMessage.textContent = message; }
+  function showMapError(message) {
+    console.error(message);
+    updateStatus(message);
+    mapLoading.textContent = message;
+    mapLoading.style.color = "#d93025";
+  }
+
+  // SDK를 모두 불러온 후에만 지도 생성
+  function loadKakaoSdk() {
+    const script = document.createElement("script");
+    script.src = "https://dapi.kakao.com/v2/maps/sdk.js?appkey=" +
+      encodeURIComponent(kakaoApiKey) + "&libraries=services&autoload=false";
+    script.async = true;
+    script.onload = function() {
+      if (!window.kakao || !kakao.maps || typeof kakao.maps.load !== "function") {
+        showMapError("카카오맵 초기화 실패: API 키와 도메인을 확인하세요.");
+        return;
+      }
+      kakao.maps.load(function() {
+        try { initializeMap(); }
+        catch (error) { showMapError("지도 생성 오류: " + error.message); }
+      });
+    };
+    script.onerror = function() { showMapError("SDK 로딩 실패: API 키, 도메인, 인터넷 연결을 확인하세요."); };
+    document.head.appendChild(script);
+  }
+
+  function initializeMap() {
+    const defaultPosition = new kakao.maps.LatLng(37.5665, 126.9780);
+    map = new kakao.maps.Map(document.getElementById("map"), { center: defaultPosition, level: 5 });
+    places = new kakao.maps.services.Places();
+    infoWindow = new kakao.maps.InfoWindow({ zIndex: 1 });
+    currentInfoWindow = new kakao.maps.InfoWindow({ removable: true, zIndex: 2 });
+    mapReady = true;
+    searchButton.disabled = false;
+    locationButton.disabled = false;
+    cinemaButton.disabled = false;
+    mapLoading.style.display = "none";
+    map.relayout();
+    getCurrentLocation();
+  }
+
+  function displayCurrentMarker(position, moveMap) {
+    if (currentMarker) currentMarker.setMap(null);
+    currentInfoWindow.close();
+    currentMarker = new kakao.maps.Marker({ map: map, position: position, title: "현재 위치" });
+    currentInfoWindow.setContent('<div style="padding:8px;white-space:nowrap;">여기에 계신가요?!</div>');
+    currentInfoWindow.open(map, currentMarker);
+    if (moveMap) { map.setCenter(position); map.setLevel(5); }
+  }
+
+  // 브라우저에서 위치 권한을 받아 현재 위치 저장
+  function getCurrentLocation() {
+    if (!mapReady) return;
+    const requestId = ++locationRequestId;
+    const searchIdAtStart = searchRequestId;
+    if (!navigator.geolocation || !window.isSecureContext) {
+      updateStatus("위치 기능은 HTTPS 또는 localhost에서 사용할 수 있습니다.");
+      return;
+    }
+    updateStatus("현재 위치를 확인하는 중입니다...");
+    navigator.geolocation.getCurrentPosition(function(position) {
+      if (requestId !== locationRequestId) return;
+      currentPosition = new kakao.maps.LatLng(position.coords.latitude, position.coords.longitude);
+      displayCurrentMarker(currentPosition, searchIdAtStart === searchRequestId);
+      updateStatus("현재 위치를 확인했습니다.");
+    }, function(error) {
+      if (requestId !== locationRequestId) return;
+      updateStatus(error.code === 1 ? "위치 권한이 거부되었습니다." : "현재 위치를 확인할 수 없습니다.");
+    }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+  }
+
+  function removeMarkers() {
+    markers.forEach(function(marker) { marker.setMap(null); });
+    markers = [];
+  }
+
+  // 선택한 영화관 표시를 없애고 일반 검색 모드로 돌아가기
+  function resetCinemaSelection() {
+    selectedCinema = null;
+    cafeSection.style.display = "none";
+    backButton.style.display = "none";
+    if (selectedCinemaMarker) selectedCinemaMarker.setMap(null);
+    selectedCinemaMarker = null;
+  }
+
+  // 영화관을 클릭하면 해당 영화관을 저장하고 카페 버튼 표시
+  function selectCinema(place) {
+    selectedCinema = place;
+    selectedCinemaName.textContent = "🎬 선택한 영화관: " + place.place_name;
+    cafeSection.style.display = "block";
+    backButton.style.display = "none";
+    updateStatus("영화관을 선택했습니다. 주변 카페 찾기 버튼을 눌러보세요.");
+  }
+
+  // 일반 장소 검색은 기존 기능 그대로 유지
+  function searchPlaces() {
+    if (!mapReady) return;
+    const keyword = searchInput.value.trim();
+    if (!keyword) { alert("검색어를 입력해주세요."); searchInput.focus(); return; }
+    const requestId = ++searchRequestId;
+    resetCinemaSelection();
+    updateStatus("장소를 검색하는 중입니다...");
+    places.keywordSearch(keyword, function(data, status) {
+      if (requestId !== searchRequestId) return;
+      if (status === kakao.maps.services.Status.OK) {
+        displayPlaces(data, "general");
+        updateStatus("검색이 완료되었습니다.");
+      } else if (status === kakao.maps.services.Status.ZERO_RESULT) {
+        clearResults(); updateStatus("검색 결과가 없습니다.");
+      } else { updateStatus("장소 검색에 실패했습니다."); }
+    });
+  }
+
+  function clearResults() {
+    removeMarkers();
+    infoWindow.close();
+    resultList.innerHTML = "";
+  }
+
+  // 현재 위치를 기준으로 영화관 검색 (최대 3페이지)
+  function searchNearbyCinemas() {
+    if (!mapReady) return;
+    if (!currentPosition) {
+      alert("먼저 위치 권한을 허용해주세요.");
+      getCurrentLocation();
+      return;
+    }
+    const requestId = ++searchRequestId;
+    resetCinemaSelection();
+    savedCinemaResults = [];
+    updateStatus("현재 위치 주변 영화관을 검색하는 중입니다...");
+    const found = [];
+    let pageCount = 0;
+    places.keywordSearch("영화관", function(data, status, pagination) {
+      if (requestId !== searchRequestId) return;
+      if (status === kakao.maps.services.Status.OK) {
+        found.push(...data.filter(function(place) {
+          const category = place.category_name || "";
+          return category.includes("영화관") || category.includes("극장");
+        }));
+        pageCount++;
+        if (pagination.hasNextPage && pageCount < 3) { pagination.nextPage(); return; }
+        finish();
+      } else if (status === kakao.maps.services.Status.ZERO_RESULT) {
+        finish();
+      } else { updateStatus("영화관 검색에 실패했습니다."); }
+    }, { location: currentPosition, radius: cinemaRadius, sort: kakao.maps.services.SortBy.DISTANCE });
+
+    function finish() {
+      if (requestId !== searchRequestId) return;
+      savedCinemaResults = Array.from(new Map(found.map(function(place) { return [place.id, place]; })).values());
+      if (savedCinemaResults.length === 0) { clearResults(); updateStatus("반경 5km 내 검색된 영화관이 없습니다."); return; }
+      displayPlaces(savedCinemaResults, "cinema");
+      updateStatus("주변 영화관 " + savedCinemaResults.length + "개를 찾았습니다. 영화관을 선택해보세요.");
+    }
+  }
+
+  // 선택한 영화관 기준 반경 1km 카페 검색 (카테고리 CE7)
+  function searchNearbyCafes() {
+    if (!selectedCinema) { alert("먼저 영화관을 선택해주세요."); return; }
+    const cinema = selectedCinema;
+    const cinemaPosition = new kakao.maps.LatLng(Number(cinema.y), Number(cinema.x));
+    const requestId = ++searchRequestId;
+    updateStatus(cinema.place_name + " 주변 카페를 검색하는 중입니다...");
+    const found = [];
+    let pageCount = 0;
+    const maxPages = 3;
+
+    places.categorySearch("CE7", function(data, status, pagination) {
+      if (requestId !== searchRequestId) return;
+      if (status === kakao.maps.services.Status.OK) {
+        found.push(...data);
+        pageCount++;
+        if (pagination.hasNextPage && pageCount < maxPages) { pagination.nextPage(); return; }
+        finish();
+      } else if (status === kakao.maps.services.Status.ZERO_RESULT) {
+        finish();
+      } else { updateStatus("카페 검색 중 오류가 발생했습니다."); }
+    }, { location: cinemaPosition, radius: cafeRadius, sort: kakao.maps.services.SortBy.DISTANCE });
+
+    function finish() {
+      if (requestId !== searchRequestId) return;
+      const cafes = Array.from(new Map(found.map(function(place) { return [place.id, place]; })).values());
+      backButton.style.display = "block";
+      if (cafes.length === 0) {
+        clearResults();
+        showSelectedCinemaMarker(cinemaPosition, cinema.place_name);
+        map.setCenter(cinemaPosition); map.setLevel(4);
+        updateStatus("선택한 영화관에서 반경 1km 내 검색된 카페가 없습니다.");
+        return;
+      }
+      displayPlaces(cafes, "cafe", cinemaPosition);
+      updateStatus(cinema.place_name + " 주변 카페 " + cafes.length + "개를 찾았습니다. (반경 1km, 최대 3페이지)");
+    }
+  }
+
+  // 카페를 검색할 때 선택한 영화관 위치도 지도에 유지
+  function showSelectedCinemaMarker(position, name) {
+    if (selectedCinemaMarker) selectedCinemaMarker.setMap(null);
+    selectedCinemaMarker = new kakao.maps.Marker({ map: map, position: position, title: "선택한 영화관: " + name, zIndex: 10 });
+  }
+
+  // 일반 장소 / 영화관 / 카페 검색 결과를 공통으로 표시
+  function displayPlaces(data, mode, centerPosition) {
+    clearResults();
+    currentInfoWindow.close();
+    if (selectedCinemaMarker) { selectedCinemaMarker.setMap(null); selectedCinemaMarker = null; }
+    const bounds = new kakao.maps.LatLngBounds();
+    if (centerPosition) {
+      bounds.extend(centerPosition);
+      showSelectedCinemaMarker(centerPosition, selectedCinema.place_name);
+    }
+    const count = document.createElement("p");
+    count.className = "result-count";
+    count.textContent = (mode === "cafe" ? "☕ 주변 카페 " : mode === "cinema" ? "🎬 주변 영화관 " : "검색 결과 ") + data.length + "개";
+    resultList.appendChild(count);
+
+    data.forEach(function(place) {
+      const position = new kakao.maps.LatLng(Number(place.y), Number(place.x));
+      const marker = new kakao.maps.Marker({ map: map, position: position, title: place.place_name });
+      markers.push(marker);
+      bounds.extend(position);
+      const item = document.createElement("div");
+      item.className = "result-item";
+      const title = document.createElement("h3");
+      title.textContent = place.place_name;
+      const address = document.createElement("p");
+      address.textContent = place.road_address_name || place.address_name || "주소 정보 없음";
+      const phone = document.createElement("p");
+      phone.textContent = place.phone || "전화번호 정보 없음";
+      item.append(title, address, phone);
+      if (mode === "cafe" && place.distance) {
+        const distance = document.createElement("p");
+        distance.textContent = "영화관에서 약 " + place.distance + "m (직선거리)";
+        item.appendChild(distance);
+      }
+      resultList.appendChild(item);
+
+      function selectPlace() {
+        map.setCenter(position);
+        map.setLevel(4);
+        const content = document.createElement("div");
+        content.style.padding = "10px";
+        content.style.whiteSpace = "nowrap";
+        content.textContent = place.place_name;
+        infoWindow.setContent(content);
+        infoWindow.open(map, marker);
+        if (mode === "cinema") selectCinema(place);
+      }
+      item.addEventListener("click", selectPlace);
+      kakao.maps.event.addListener(marker, "click", selectPlace);
+    });
+    if (data.length > 0) map.setBounds(bounds);
+  }
+
+  // 카페 검색 후 영화관 목록으로 돌아가기
+  function backToCinemas() {
+    ++searchRequestId;
+    if (!savedCinemaResults.length) { searchNearbyCinemas(); return; }
+    resetCinemaSelection();
+    displayPlaces(savedCinemaResults, "cinema");
+    updateStatus("영화관 목록으로 돌아왔습니다. 다른 영화관을 선택해보세요.");
+  }
+
+  searchButton.addEventListener("click", searchPlaces);
+  searchInput.addEventListener("keydown", function(event) { if (event.key === "Enter") searchPlaces(); });
+  locationButton.addEventListener("click", getCurrentLocation);
+  cinemaButton.addEventListener("click", searchNearbyCinemas);
+  cafeButton.addEventListener("click", searchNearbyCafes);
+  backButton.addEventListener("click", backToCinemas);
+  window.addEventListener("resize", function() { if (mapReady) map.relayout(); });
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", loadKakaoSdk);
+  else loadKakaoSdk();
+</script>
+</body>
+</html>
